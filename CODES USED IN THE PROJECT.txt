@@ -1,0 +1,239 @@
+-------------------------------------------------------------------------------
+ CLIPPING BANDS WITH AOI FOR NDBI CALCULATION WITHOUT NO DATA ERROR USING PYQGIS
+-------------------------------------------------------------------------------
+
+from qgis.core import *
+import processing
+
+# INPUTS
+swir_path = r"D:\DHARAVI\LANDSAT\2015\NDBI_2015\B6_clip.tif"
+nir_path = r"D:\DHARAVI\LANDSAT\2015\NDBI_2015\B5_clip.tif"
+aoi_path = r"D:\DHARAVI\Shapefile\AOI.gpkg"
+output_path = r"D:\DHARAVI\LANDSAT\2015\NDBI_2015\NDBI_2015.tif"
+
+# Step 1: Calculate NDBI safely (avoid division by zero)
+ndbi = processing.run("gdal:rastercalculator", {
+    'INPUT_A': swir_path,
+    'BAND_A': 1,
+    'INPUT_B': nir_path,
+    'BAND_B': 1,
+    'FORMULA': '(A - B) / (A + B + 0.0001)',  # small value prevents division by zero
+    'OUTPUT': 'TEMPORARY_OUTPUT'
+})
+
+# Step 2: Clip with AOI
+clipped = processing.run("gdal:cliprasterbymasklayer", {
+    'INPUT': ndbi['OUTPUT'],
+    'MASK': aoi_path,
+    'CROP_TO_CUTLINE': True,
+    'KEEP_RESOLUTION': True,
+    'OUTPUT': output_path
+})
+
+# Step 3: Load result
+layer = QgsRasterLayer(output_path, "NDBI_2015")
+QgsProject.instance().addMapLayer(layer)
+
+
+
+
+
+
+-------------------------------------------------------------------------------
+ CALCULATING NDBI FOR RASTER DATA AND RECLASSIFYING IT USING PYQGIS
+-------------------------------------------------------------------------------
+
+import processing
+from qgis.core import QgsRasterLayer, QgsProject
+
+# -------------------------------
+# 1. Input & Output paths
+# -------------------------------
+input_path = r"D:/Landsat/NDBI.tif"   # <-- change this
+output_path = r"D:/Landsat/NDBI_reclass.tif"
+
+# -------------------------------
+# 2. Load raster layer
+# -------------------------------
+layer = QgsRasterLayer(input_path, "NDBI")
+
+if not layer.isValid():
+    print("❌ Raster failed to load")
+else:
+    QgsProject.instance().addMapLayer(layer)
+    print("✅ Raster loaded")
+
+# -------------------------------
+# 3. Improved classification expression
+# (Lower threshold + NoData handling)
+# -------------------------------
+expression = (
+    '( "NDBI@1" <= -0.2 ) * 1 + '
+    '( "NDBI@1" > -0.2 AND "NDBI@1" <= 0 ) * 2 + '
+    '( "NDBI@1" > 0 AND "NDBI@1" <= 0.1 ) * 3 + '
+    '( "NDBI@1" > 0.1 ) * 4'
+)
+
+# -------------------------------
+# 4. Run Raster Calculator
+# -------------------------------
+result = processing.run("qgis:rastercalculator", {
+    'EXPRESSION': expression,
+    'LAYERS': [layer],
+    'CELLSIZE': 0,
+    'EXTENT': layer.extent(),
+    'CRS': layer.crs(),
+    'OUTPUT': output_path
+})
+
+print("✅ Reclassification completed!")
+
+# -------------------------------
+# 5. Load output raster
+# -------------------------------
+reclass_layer = QgsRasterLayer(output_path, "NDBI_Reclass")
+
+if reclass_layer.isValid():
+    QgsProject.instance().addMapLayer(reclass_layer)
+    print("✅ Output loaded successfully!")
+else:
+    print("❌ Output failed to load")
+
+
+
+
+
+
+
+
+
+
+
+
+
+-----------------------------------------------------------------------------
+ EDITING ATTRIBUTE AND CALCULATING AREA , PERCENTAGE OF EACH CLASS USING PYQGIS
+-----------------------------------------------------------------------------
+
+
+from qgis.core import (
+    QgsProject,
+    QgsField,
+    QgsExpression,
+    QgsExpressionContext,
+    QgsExpressionContextUtils,
+    edit
+)
+from PyQt5.QtCore import QVariant
+
+# -------------------------------
+# 1. Load your shapefile
+# -------------------------------
+layer = QgsProject.instance().mapLayersByName("2015 — dissolved")[0]
+# 🔁 Replace "your_layer_name" with your actual layer name
+
+# -------------------------------
+# 2. Add TYPE field
+# -------------------------------
+if "TYPE" not in [field.name() for field in layer.fields()]:
+    layer.dataProvider().addAttributes([QgsField("TYPE", QVariant.String)])
+    layer.updateFields()
+
+# -------------------------------
+# 3. Add AREA field (in sq.km)
+# -------------------------------
+if "AREA_KM2" not in [field.name() for field in layer.fields()]:
+    layer.dataProvider().addAttributes([QgsField("AREA_KM2", QVariant.Double)])
+    layer.updateFields()
+
+# -------------------------------
+# 4. Update TYPE and AREA
+# -------------------------------
+with edit(layer):
+    for feature in layer.getFeatures():
+        dn = feature["DN"]
+
+        # Assign TYPE based on DN
+        if dn == 2:
+            feature["TYPE"] = "VEGETATION"
+        elif dn == 3:
+            feature["TYPE"] = "TRANSITION LAND"
+        elif dn == 4:
+            feature["TYPE"] = "BUILT-UP"
+        else:
+            feature["TYPE"] = "OTHER"
+
+        # Calculate area (in sq.km)
+        area = feature.geometry().area() / 1e6
+        feature["AREA_KM2"] = area
+
+        layer.updateFeature(feature)
+
+print("✅ TYPE and AREA fields updated!")
+
+# -------------------------------
+# 5. Calculate total area
+# -------------------------------
+total_area = 0
+for f in layer.getFeatures():
+    total_area += f["AREA_KM2"]
+
+print("Total Area:", total_area)
+
+# -------------------------------
+# 6. Add PERCENTAGE field
+# -------------------------------
+if "PERCENT" not in [field.name() for field in layer.fields()]:
+    layer.dataProvider().addAttributes([QgsField("PERCENT", QVariant.Double)])
+    layer.updateFields()
+
+# -------------------------------
+# 7. Calculate percentage
+# -------------------------------
+with edit(layer):
+    for feature in layer.getFeatures():
+        if total_area > 0:
+            percent = (feature["AREA_KM2"] / total_area) * 100
+        else:
+            percent = 0
+
+        feature["PERCENT"] = percent
+        layer.updateFeature(feature)
+
+print("✅ Percentage calculation completed!")
+
+
+
+
+
+-----------------------------------------------------------------------------
+ CREATING LINE GRAPH TO DETECT CHANGE USING JUPYTER NOTEBOOK
+-----------------------------------------------------------------------------
+
+
+
+import matplotlib.pyplot as plt
+
+data = {
+    "VEGETATION": [0.04, 0.06],
+    "TRANSITION LAND": [38.46, 31.29],
+    "BUILT UP": [61.5, 68.65]
+}
+
+years = [2015, 2025]
+
+plt.figure()
+
+for cls, values in data.items():
+    plt.plot(years, values, marker='o', label=cls)
+
+plt.xlabel("Year")
+plt.ylabel("Percentage (%)")
+plt.title("NDBI Change Detection (2015–2025)")
+plt.legend()
+plt.grid()
+
+# SAVE IMAGE
+plt.savefig(r"D:\DHARAVI\LANDSAT\OUTPUT\LAYOUTS\line_graph.png", dpi=300)
+
+plt.show()
